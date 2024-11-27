@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+	<head>
+		<title>three.js webgl - FBX loader</title>
+		<meta charset="utf-8">
+		<meta name="viewport" content="width=device-width, user-scalable=no, minimum-scale=1.0, maximum-scale=1.0">
+		<link type="text/css" rel="stylesheet" href="main.css">
+	</head>
+
+	<body>
+		<script type="importmap">
+			{
+				"imports": {
+					"three": "../build/three.module.js",
+					"three/addons/": "./jsm/"
+				}
+			}
+		</script>
+
+		<script type="module">
+
+			import * as THREE from 'three';
+			import Stats from 'three/addons/libs/stats.module.js';
+			import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+			import { FBXLoader } from 'three/addons/loaders/FBXLoader.js';
+			import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
+			import { GUI } from 'three/addons/libs/lil-gui.module.min.js';
+
+			let camera, scene, renderer, stats, object, loader, mixer;
+			const clock = new THREE.Clock();
+			const moveSpeed = 150;
+			let jump = false;
+			let velocityY = 0;
+			const gravity = 70;
+			let canJump = true;
+			const jumpSpeed = 60;
+			const params = { asset: 'personajeQ' };
+			let controls;
+			init();
+			animate();
+
+			function init() {
+				const container = document.createElement('div');
+				document.body.appendChild(container);
+
+				camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 2000);
+				camera.position.set(100, 200, 300);
+
+				scene = new THREE.Scene();
+				scene.background = new THREE.Color(0x000000);
+				scene.fog = new THREE.FogExp2(0xd3d3d3, 0.002); // Agregar un efecto de niebla exponencial a la escena para mejor visibilidad
+
+				// Luz hemisférica que representa el cielo y el suelo
+				const hemiLight = new THREE.HemisphereLight(0xffffff, 0x444444, 5);
+				hemiLight.position.set(0, 200, 0);
+				scene.add(hemiLight);
+
+				// Luz direccional para representar la luz solar
+				const dirLight = new THREE.DirectionalLight(0xffffff, 5);
+				dirLight.position.set(0, 200, 100);
+				dirLight.castShadow = true;
+				dirLight.shadow.mapSize.width = 2048;
+				dirLight.shadow.mapSize.height = 2048;
+				dirLight.shadow.camera.left = -500;
+				dirLight.shadow.camera.right = 500;
+				dirLight.shadow.camera.top = 500;
+				dirLight.shadow.camera.bottom = -500;
+				scene.add(dirLight);
+
+				// Agregar fondo HDR
+				const rgbeLoader = new RGBELoader();
+				rgbeLoader.load('models/rgbe/fondo.hdr', function (texture) {
+					texture.mapping = THREE.EquirectangularReflectionMapping;
+					scene.background = texture;
+					scene.environment = texture;
+				});
+
+				// Agregar una luz puntual para simular una farola o candelabro
+				const pointLight = new THREE.PointLight(0xffaa00, 3, 500);
+				pointLight.position.set(50, 150, -100);
+				pointLight.castShadow = true;
+				scene.add(pointLight);
+
+				// Plano del suelo con color temático espacial y agregar efecto de reflexión lunar
+				const groundMaterial = new THREE.MeshPhongMaterial({
+					color: 0x1a1a3b,
+					shininess: 80,
+					reflectivity: 0.5,
+					transparent: true,
+					opacity: 0.7
+				});
+				const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2000, 2000), groundMaterial);
+				mesh.rotation.x = - Math.PI / 2;
+				mesh.receiveShadow = true;
+				scene.add(mesh);
+
+				const grid = new THREE.GridHelper(2000, 20, 0x000000, 0x000000);
+				grid.material.opacity = 0.2;
+				grid.material.transparent = true;
+				scene.add(grid);
+
+				loader = new FBXLoader();
+				loader.load('models/fbx/' + params.asset + '.fbx', function (group) {
+					object = group;
+					if (object.animations && object.animations.length) {
+						mixer = new THREE.AnimationMixer(object);
+						const action = mixer.clipAction(object.animations[0]);
+						action.play();
+					} else {
+						mixer = null;
+					}
+					object.traverse(function (child) {
+						if (child.isMesh) {
+							child.castShadow = true;
+							child.receiveShadow = true;
+							// Hacer la sombra del personaje más oscura ajustando las propiedades del material
+							child.material.shadowSide = THREE.BackSide;
+							child.material.shadowOpacity = 0.9; // Incrementar la opacidad de la sombra para hacerla más oscura
+						}
+					});
+					// Agregar efecto de sombra al personaje
+					object.castShadow = true;
+					scene.add(object);
+				});
+
+				renderer = new THREE.WebGLRenderer({ antialias: true });
+				renderer.setPixelRatio(window.devicePixelRatio);
+				renderer.setSize(window.innerWidth, window.innerHeight);
+				renderer.shadowMap.enabled = true;
+				renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+				container.appendChild(renderer.domElement);
+
+				controls = new OrbitControls(camera, renderer.domElement);
+				controls.target.set(0, 100, 0);
+				controls.update();
+				controls.enableDamping = true;
+				controls.dampingFactor = 0.05;
+				controls.enablePan = true;
+				controls.enableZoom = true;
+				controls.minDistance = 100;
+				controls.maxDistance = 1000;
+				controls.enableRotate = true;
+
+				window.addEventListener('resize', onWindowResize);
+				window.addEventListener('keydown', onKeyDown);
+				window.addEventListener('keyup', onKeyUp);
+				
+				stats = new Stats();
+				container.appendChild(stats.dom);
+			}
+
+			const keysPressed = {};
+			function onKeyDown(event) {
+				keysPressed[event.key.toLowerCase()] = true;
+				if (event.key === ' ' && canJump) {
+					jump = true;
+					canJump = false;
+				}
+			}
+
+			function onKeyUp(event) {
+				keysPressed[event.key.toLowerCase()] = false;
+			}
+
+			function animate() {
+				requestAnimationFrame(animate);
+				const delta = clock.getDelta();
+				if (mixer) mixer.update(delta);
+				updateCharacterMovement(delta);
+				updateCamera();
+				renderer.render(scene, camera);
+				stats.update();
+			}
+
+			function updateCharacterMovement(delta) {
+				if (object) {
+					const moveDistance = moveSpeed * delta;
+					const direction = new THREE.Vector3();
+					camera.getWorldDirection(direction);
+
+					const forward = new THREE.Vector3(direction.x, 0, direction.z).normalize();
+					const right = new THREE.Vector3().crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+
+					if (keysPressed['w']) {
+						object.position.add(forward.clone().multiplyScalar(moveDistance));
+						object.rotation.y = Math.atan2(forward.x, forward.z);
+					}
+					if (keysPressed['s']) {
+						object.position.add(forward.clone().multiplyScalar(-moveDistance));
+						object.rotation.y = Math.atan2(-forward.x, -forward.z);
+					}
+					if (keysPressed['a']) {
+						object.position.add(right.clone().multiplyScalar(-moveDistance));
+						object.rotation.y = Math.atan2(-right.x, -right.z);
+					}
+					if (keysPressed['d']) {
+						object.position.add(right.clone().multiplyScalar(moveDistance));
+						object.rotation.y = Math.atan2(right.x, right.z);
+					}
+
+					if (jump) {
+						velocityY = jumpSpeed;
+						jump = false;
+					}
+
+					object.position.y += velocityY * delta;
+					velocityY -= gravity * delta;
+					if (object.position.y <= 0) {
+						object.position.y = 0;
+						velocityY = 0;
+						canJump = true;
+					}
+				}
+			}
+
+			function updateCamera() {
+				if (object) {
+					controls.target.copy(object.position);
+					controls.update();
+				}
+			}
+
+			function onWindowResize() {
+				camera.aspect = window.innerWidth / window.innerHeight;
+				camera.updateProjectionMatrix();
+				renderer.setSize(window.innerWidth, window.innerHeight);
+			}
+
+		</script>
+		
+		<footer style="position: absolute; bottom: 0; left: 0; padding: 10px;">
+			<h1 style="font-family: Arial; font-weight: bold; color: #ffd700;">
+				Garcia Peña Carlos Alexis<br>
+				Ramirez Mendoza Angel<br>
+				22200184<br>
+				22200201<br>
+				Rata Espacial
+			</h1>
+		</footer>
+	</body>
+</html>
